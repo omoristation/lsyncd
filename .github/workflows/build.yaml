@@ -1,38 +1,240 @@
-name: Build Static Lsyncd
+name: Build Static lsyncd
 
 on:
   push:
     tags:
-      - 'v*' # 当你推送标签如 v2.3.1 时触发
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      lsyncd_version:
+        description: 'lsyncd version tag (e.g. release-2.3.1)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            cross: ""
+            cc: gcc
+            musl_target: x86_64-linux-musl
+          - arch: aarch64
+            cross: aarch64-linux-gnu-
+            cc: aarch64-linux-gnu-gcc
+            musl_target: aarch64-linux-musl
+
     steps:
-      - name: Checkout code
+      - name: Checkout this repo
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Set lsyncd version
+        id: version
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake lua5.3 liblua5.3-dev build-essential
+          INPUT_VER="${{ github.event.inputs.lsyncd_version }}"
+          TAG_VER="${GITHUB_REF#refs/tags/}"
 
-      - name: Static Compilation
+          if [ -n "$INPUT_VER" ]; then
+            LSYNCD_VER="$INPUT_VER"
+          elif [[ "$TAG_VER" == v* ]]; then
+            # map our tag v2.3.1 -> lsyncd release-2.3.1
+            LSYNCD_VER="release-${TAG_VER#v}"
+          else
+            # fetch latest release tag from lsyncd repo
+            LSYNCD_VER=$(curl -s https://api.github.com/repos/lsyncd/lsyncd/releases/latest \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          fi
+
+          echo "LSYNCD_VER=$LSYNCD_VER" >> $GITHUB_ENV
+          echo "version=$LSYNCD_VER" >> $GITHUB_OUTPUT
+          echo "Building lsyncd $LSYNCD_VER for ${{ matrix.arch }}"
+
+      - name: Install build dependencies
         run: |
-          mkdir build && cd build
-          # 1. 禁用 MANPAGE 避免 a2x 报错
-          # 2. 强制静态链接
-          cmake -DLUA_LIBRARIES=/usr/lib/x86_64-linux-gnu/liblua5.3.a \
-                -DLUA_INCLUDE_DIR=/usr/include/lua5.3 \
-                -DMANPAGE=OFF \
-                -DCMAKE_EXE_LINKER_FLAGS="-static" ..
-          make
-          # 3. 验证是否真的是静态链接（可选）
-          ldd lsyncd || echo "Static build confirmed"
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential cmake git wget \
+            musl-tools \
+            ${{ matrix.arch == 'aarch64' && 'gcc-aarch64-linux-gnu g++-aarch64-linux-gnu' || '' }}
 
-      - name: Release Binary
-        uses: softprops/action-gh-release@v1
+      - name: Install musl cross-compiler (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: |
+          wget -q https://musl.cc/aarch64-linux-musl-cross.tgz
+          tar xf aarch64-linux-musl-cross.tgz -C /opt
+          echo "/opt/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+
+      - name: Set compiler env
+        run: |
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            echo "CC=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" >> $GITHUB_ENV
+            echo "CXX=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++" >> $GITHUB_ENV
+            echo "AR=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-ar" >> $GITHUB_ENV
+            echo "RANLIB=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-ranlib" >> $GITHUB_ENV
+            echo "CROSS_TARGET=aarch64-linux-musl" >> $GITHUB_ENV
+          else
+            echo "CC=musl-gcc" >> $GITHUB_ENV
+            echo "CXX=g++" >> $GITHUB_ENV
+            echo "AR=ar" >> $GITHUB_ENV
+            echo "RANLIB=ranlib" >> $GITHUB_ENV
+            echo "CROSS_TARGET=x86_64-linux-musl" >> $GITHUB_ENV
+          fi
+          echo "BUILD_DIR=$HOME/build" >> $GITHUB_ENV
+          echo "SYSROOT=$HOME/sysroot" >> $GITHUB_ENV
+
+      - name: Create sysroot
+        run: mkdir -p $SYSROOT/{lib,include}
+
+      # ── Build static Lua 5.3 ──────────────────────────────────────────────
+      - name: Build static Lua 5.3
+        run: |
+          cd $HOME
+          wget -q https://www.lua.org/ftp/lua-5.3.6.tar.gz
+          tar xf lua-5.3.6.tar.gz
+          cd lua-5.3.6
+
+          make -j$(nproc) \
+            CC="$CC" \
+            AR="$AR rcu" \
+            RANLIB="$RANLIB" \
+            MYCFLAGS="-DLUA_USE_POSIX -DLUA_USE_DLOPEN" \
+            MYLIBS="-ldl" \
+            linux
+
+          # install headers and static lib into our sysroot
+          install -m 644 src/lua.h src/luaconf.h src/lualib.h src/lauxlib.h src/lua.hpp \
+            $SYSROOT/include/
+          install -m 644 src/liblua.a $SYSROOT/lib/
+
+          echo "✅ Lua 5.3 static library built"
+          ls -lh $SYSROOT/lib/liblua.a
+
+      # ── Clone lsyncd ──────────────────────────────────────────────────────
+      - name: Clone lsyncd ${{ env.LSYNCD_VER }}
+        run: |
+          git clone --depth 1 --branch $LSYNCD_VER \
+            https://github.com/lsyncd/lsyncd.git $HOME/lsyncd
+          echo "lsyncd source ready:"
+          ls $HOME/lsyncd
+
+      # ── Patch CMakeLists to force static linking ──────────────────────────
+      - name: Patch CMakeLists for static Lua
+        run: |
+          cd $HOME/lsyncd
+
+          # Tell CMake where to find our static lua
+          cat >> CMakeLists.txt << 'EOF'
+
+          # === Static Lua override (injected by CI) ===
+          set(LUA_INCLUDE_DIR "$ENV{SYSROOT}/include" CACHE PATH "" FORCE)
+          set(LUA_LIBRARY     "$ENV{SYSROOT}/lib/liblua.a" CACHE FILEPATH "" FORCE)
+          set(LUA_LIBRARIES   "$ENV{SYSROOT}/lib/liblua.a" CACHE STRING "" FORCE)
+          EOF
+
+      - name: Configure lsyncd (CMake)
+        run: |
+          mkdir -p $HOME/lsyncd/build
+          cd $HOME/lsyncd/build
+
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="$CC" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -ldl" \
+            -DLUA_INCLUDE_DIR="$SYSROOT/include" \
+            -DLUA_LIBRARY="$SYSROOT/lib/liblua.a" \
+            -DLUA_LIBRARIES="$SYSROOT/lib/liblua.a" \
+            -DCMAKE_SKIP_RPATH=ON \
+            -DCMAKE_FIND_LIBRARY_SUFFIXES=".a;.so"
+
+      - name: Build lsyncd
+        run: |
+          cd $HOME/lsyncd/build
+          make -j$(nproc) VERBOSE=1
+
+          echo "=== Binary info ==="
+          ls -lh lsyncd
+          file lsyncd
+          # check no shared lib deps (except maybe kernel vdso)
+          ldd lsyncd 2>&1 || true
+
+      - name: Verify static binary
+        run: |
+          BIN=$HOME/lsyncd/build/lsyncd
+          if file "$BIN" | grep -q "statically linked"; then
+            echo "✅ Binary is statically linked"
+          else
+            echo "⚠️  Binary may have dynamic deps:"
+            ldd "$BIN" || true
+          fi
+
+      - name: Package binary
+        run: |
+          OUTNAME="lsyncd-${{ env.LSYNCD_VER }}-linux-${{ matrix.arch }}-static"
+          cp $HOME/lsyncd/build/lsyncd /tmp/${OUTNAME}
+          strip /tmp/${OUTNAME}
+          echo "OUTNAME=${OUTNAME}" >> $GITHUB_ENV
+          echo "📦 Package: ${OUTNAME}"
+          ls -lh /tmp/${OUTNAME}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: build/lsyncd
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ env.OUTNAME }}
+          path: /tmp/${{ env.OUTNAME }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./dist
+
+      - name: List built files
+        run: find ./dist -type f | sort
+
+      - name: Generate release notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Static lsyncd Binaries
+
+          Self-contained, **statically linked** lsyncd binaries — no runtime dependencies.
+          Drop the binary anywhere and run it directly.
+
+          ### Included
+          | File | Architecture |
+          |------|-------------|
+          | `*-x86_64-static` | x86_64 (amd64) |
+          | `*-aarch64-static` | ARM64 (aarch64) |
+
+          ### What's statically linked
+          - `liblua 5.3` — Lua runtime
+          - `libc` (musl) — C standard library
+          - All other lsyncd dependencies
+
+          ### Usage
+          ```bash
+          chmod +x lsyncd-*-linux-x86_64-static
+          sudo ./lsyncd-*-linux-x86_64-static /etc/lsyncd.conf
+          ```
+
+          > Built from upstream [lsyncd/lsyncd](https://github.com/lsyncd/lsyncd)
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_file: release_notes.md
+          files: |
+            ./dist/**/*
+          generate_release_notes: false
