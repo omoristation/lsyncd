@@ -1,41 +1,43 @@
-name: Build lsyncd static
+name: build-lsyncd-static
 
 on:
   workflow_dispatch:
   push:
     tags:
       - "v*"
+
 jobs:
   build:
+
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y \
             build-essential \
-            autoconf \
-            automake \
-            libtool \
             musl-tools \
             wget \
-            git
+            xz-utils
 
-      - name: Download lsyncd
+      - name: Download lsyncd release
         run: |
-          git clone https://github.com/lsyncd/lsyncd.git
+          wget https://github.com/lsyncd/lsyncd/archive/refs/tags/release-2.2.3.tar.gz
+          tar xf release-2.2.3.tar.gz
+          mv lsyncd-release-2.2.3 lsyncd
 
-      - name: Build Lua
+      - name: Build Lua static
         run: |
           wget https://www.lua.org/ftp/lua-5.3.6.tar.gz
-          tar xzf lua-5.3.6.tar.gz
+          tar xf lua-5.3.6.tar.gz
           cd lua-5.3.6/src
           make CC=musl-gcc MYCFLAGS="-fPIC" liblua.a -j2
 
       - name: Build lsyncd
         run: |
           cd lsyncd
-          autoreconf -fvi
 
           ./configure \
             CC=musl-gcc \
@@ -48,10 +50,15 @@ jobs:
       - name: Package
         run: |
           mkdir release
-          cp lsyncd/src/lsyncd release/lsyncd-linux-amd64
+          cp lsyncd/lsyncd release/lsyncd-linux-amd64
           strip release/lsyncd-linux-amd64
 
-      - name: Upload
+      - name: SHA256
+        run: |
+          cd release
+          sha256sum lsyncd-linux-amd64 > lsyncd-linux-amd64.sha256
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lsyncd
