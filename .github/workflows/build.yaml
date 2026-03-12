@@ -1,20 +1,48 @@
-name: "Build"
+name: Build lsyncd static
+
 on:
-  pull_request:
   push:
+  workflow_dispatch:
+
 jobs:
-  tests:
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        version:
-          - lsyncd_lua5_3
-          # broken with lua 5.4.4. luac segfault
-          # - lsyncd_lua5_4
-          - lsyncd_lua5_1
+
     steps:
-      - uses: actions/checkout@v2.4.0
-      - uses: cachix/install-nix-action@v15
-      - run: chmod og-rw ~
-      - run: nix develop .#${{ matrix.version }} --command ./tests/ci-run.sh
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install deps
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          build-essential autoconf automake libtool git
+
+    - name: Build Lua
+      run: |
+        git clone https://github.com/lua/lua.git
+        cd lua
+        git checkout v5.3.6
+        make linux MYCFLAGS="-fPIC"
+
+    - name: Build lsyncd
+      run: |
+        ./autogen.sh
+        ./configure \
+        LUA_CFLAGS="-I../lua/src" \
+        LUA_LIBS="../lua/src/liblua.a -lm -ldl" \
+        --enable-static \
+        --disable-shared
+        make
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: lsyncd
+        path: src/lsyncd
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: src/lsyncd
