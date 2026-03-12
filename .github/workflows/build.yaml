@@ -49,7 +49,7 @@ jobs:
 
       - name: Build lsyncd
         run: |
-          ./autogen.sh
+          autoreconf -fvi
           ./configure \
             CC=$CC \
             LUA_CFLAGS="-I../lua-5.3.6/src" \
