@@ -10,6 +10,7 @@ on:
 
 jobs:
   build:
+    timeout-minutes: 30
     name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
 
@@ -46,6 +47,10 @@ jobs:
           tar xzf lua-5.3.6.tar.gz
           cd lua-5.3.6/src
           make CC=$CC MYCFLAGS="-fPIC" liblua.a
+          
+      - name: Check Lua
+        run: |
+          ls -lh lua-5.3.6/src/liblua.a
 
       - name: Build lsyncd
         run: |
@@ -57,7 +62,7 @@ jobs:
             --enable-static \
             --disable-shared
 
-          make -j$(nproc)
+          make -j2
 
       - name: Package binary
         run: |
