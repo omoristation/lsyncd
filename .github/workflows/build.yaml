@@ -41,11 +41,11 @@ jobs:
           fi
 
       - name: Build Lua
-          run: |
-            wget https://www.lua.org/ftp/lua-5.3.6.tar.gz
-            tar xzf lua-5.3.6.tar.gz
-            cd lua-5.3.6/src
-            make CC=$CC MYCFLAGS="-fPIC" liblua.a
+        run: |
+          wget https://www.lua.org/ftp/lua-5.3.6.tar.gz
+          tar xzf lua-5.3.6.tar.gz
+          cd lua-5.3.6/src
+          make CC=$CC MYCFLAGS="-fPIC" liblua.a
 
       - name: Build lsyncd
         run: |
