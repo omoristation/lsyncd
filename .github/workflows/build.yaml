@@ -99,13 +99,15 @@ jobs:
           tar xf lua-5.3.6.tar.gz
           cd lua-5.3.6
 
+          # Only build the static library (liblua.a), NOT the lua/luac executables.
+          # Building the full "linux" target pulls in lua.c which requires readline.h.
+          # We only need the core library objects — compile them directly.
           make -j$(nproc) \
             CC="$CC" \
             AR="$AR rcu" \
             RANLIB="$RANLIB" \
-            MYCFLAGS="-DLUA_USE_POSIX -DLUA_USE_DLOPEN" \
-            MYLIBS="-ldl" \
-            linux
+            MYCFLAGS="-DLUA_USE_POSIX" \
+            -C src liblua.a
 
           # install headers and static lib into our sysroot
           install -m 644 src/lua.h src/luaconf.h src/lualib.h src/lauxlib.h src/lua.hpp \
