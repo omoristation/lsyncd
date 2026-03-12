@@ -4,10 +4,9 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
-  push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   build:
@@ -60,7 +59,7 @@ jobs:
 
           make -j$(nproc)
 
-      - name: Rename binary
+      - name: Package binary
         run: |
           mkdir release
           cp src/lsyncd release/lsyncd-linux-${{ matrix.arch }}
