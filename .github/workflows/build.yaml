@@ -2,46 +2,93 @@ name: Build lsyncd static
 
 on:
   push:
+    branches:
+      - main
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
+    name: Build ${{ matrix.arch }}
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install deps
-      run: |
-        sudo apt update
-        sudo apt install -y \
-          build-essential autoconf automake libtool wget
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            wget \
+            gcc-aarch64-linux-gnu
 
-    - name: Build Lua
-      run: |
-        wget https://www.lua.org/ftp/lua-5.3.6.tar.gz
-        tar xzf lua-5.3.6.tar.gz
-        cd lua-5.3.6
-        make linux MYCFLAGS="-fPIC"
+      - name: Set compiler
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          else
+            echo "CC=gcc" >> $GITHUB_ENV
+          fi
 
-    - name: Build lsyncd
-      run: |
-        ./autogen.sh
-        ./configure \
-          LUA_CFLAGS="-I../lua-5.3.6/src" \
-          LUA_LIBS="../lua-5.3.6/src/liblua.a -lm -ldl" \
-          --enable-static \
-          --disable-shared
-        make
+      - name: Build Lua
+        run: |
+          wget https://www.lua.org/ftp/lua-5.3.6.tar.gz
+          tar xzf lua-5.3.6.tar.gz
+          cd lua-5.3.6
+          make linux CC=$CC MYCFLAGS="-fPIC"
 
-    - name: Upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: lsyncd
-        path: src/lsyncd
+      - name: Build lsyncd
+        run: |
+          ./autogen.sh
+          ./configure \
+            CC=$CC \
+            LUA_CFLAGS="-I../lua-5.3.6/src" \
+            LUA_LIBS="../lua-5.3.6/src/liblua.a -lm -ldl" \
+            --enable-static \
+            --disable-shared
 
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: src/lsyncd
+          make -j$(nproc)
+
+      - name: Rename binary
+        run: |
+          mkdir release
+          cp src/lsyncd release/lsyncd-linux-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsyncd-${{ matrix.arch }}
+          path: release/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Prepare release files
+        run: |
+          mkdir release
+          cp lsyncd-amd64/* release/
+          cp lsyncd-arm64/* release/
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
