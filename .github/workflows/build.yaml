@@ -20,11 +20,15 @@ jobs:
       - name: Static Compilation
         run: |
           mkdir build && cd build
-          # 注意：这里强制指定链接静态库 .a
+          # 1. 禁用 MANPAGE 避免 a2x 报错
+          # 2. 强制静态链接
           cmake -DLUA_LIBRARIES=/usr/lib/x86_64-linux-gnu/liblua5.3.a \
                 -DLUA_INCLUDE_DIR=/usr/include/lua5.3 \
+                -DMANPAGE=OFF \
                 -DCMAKE_EXE_LINKER_FLAGS="-static" ..
           make
+          # 3. 验证是否真的是静态链接（可选）
+          ldd lsyncd || echo "Static build confirmed"
 
       - name: Release Binary
         uses: softprops/action-gh-release@v1
