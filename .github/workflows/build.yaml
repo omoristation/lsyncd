@@ -9,6 +9,7 @@ on:
 jobs:
 
   build:
+
     name: build-${{ matrix.arch }}
     runs-on: ubuntu-latest
 
@@ -17,9 +18,6 @@ jobs:
         arch: [amd64, arm64]
 
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -30,8 +28,14 @@ jobs:
             automake \
             libtool \
             wget \
+            git \
             musl-tools \
             gcc-aarch64-linux-gnu
+
+      - name: Download lsyncd source
+        run: |
+          git clone https://github.com/lsyncd/lsyncd.git
+          cd lsyncd
 
       - name: Set compiler
         run: |
@@ -48,24 +52,24 @@ jobs:
           cd lua-5.3.6/src
           make CC=$CC MYCFLAGS="-fPIC" liblua.a
 
-      - name: Prepare lsyncd build
-        run: |
-          autoreconf -fvi
-
       - name: Build lsyncd
         run: |
+          cd lsyncd
+
+          autoreconf -fvi
+
           ./configure \
             CC=$CC \
-            CFLAGS="-static -O2" \
+            CFLAGS="-O2 -static" \
             LUA_CFLAGS="-I../lua-5.3.6/src" \
             LUA_LIBS="../lua-5.3.6/src/liblua.a -lm -ldl"
 
           make -j2
 
-      - name: Strip binary
+      - name: Package binary
         run: |
           mkdir release
-          cp src/lsyncd release/lsyncd-linux-${{ matrix.arch }}
+          cp lsyncd/src/lsyncd release/lsyncd-linux-${{ matrix.arch }}
           strip release/lsyncd-linux-${{ matrix.arch }}
 
       - name: Generate SHA256
@@ -97,7 +101,7 @@ jobs:
           cp lsyncd-amd64/* release/
           cp lsyncd-arm64/* release/
 
-      - name: Publish GitHub Release
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
