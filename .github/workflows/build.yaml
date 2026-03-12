@@ -9,33 +9,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: Install deps
       run: |
         sudo apt update
         sudo apt install -y \
-          build-essential autoconf automake libtool git
+          build-essential autoconf automake libtool wget
 
     - name: Build Lua
       run: |
-        git clone https://github.com/lua/lua.git
-        cd lua
-        git checkout v5.3.6
+        wget https://www.lua.org/ftp/lua-5.3.6.tar.gz
+        tar xzf lua-5.3.6.tar.gz
+        cd lua-5.3.6
         make linux MYCFLAGS="-fPIC"
 
     - name: Build lsyncd
       run: |
         ./autogen.sh
         ./configure \
-        LUA_CFLAGS="-I../lua/src" \
-        LUA_LIBS="../lua/src/liblua.a -lm -ldl" \
-        --enable-static \
-        --disable-shared
+          LUA_CFLAGS="-I../lua-5.3.6/src" \
+          LUA_LIBS="../lua-5.3.6/src/liblua.a -lm -ldl" \
+          --enable-static \
+          --disable-shared
         make
 
-    - name: Upload artifact
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: lsyncd
